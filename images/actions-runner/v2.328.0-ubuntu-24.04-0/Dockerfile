@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright 2025 The actions-runner-controller authors.
 # SPDX-FileCopyrightText: 2025 k0s authors
 
-FROM docker.io/library/ubuntu:24.04
+FROM docker.io/library/ubuntu:24.04 AS base
 
 ARG TARGETPLATFORM
 ARG RUNNER_VERSION=2.328.0
@@ -46,13 +46,34 @@ RUN adduser --disabled-password --gecos "" --uid $RUNNER_USER_UID runner \
 ENV HOME=/home/runner
 
 ENV RUNNER_ASSETS_DIR=/runnertmp
-RUN export ARCH=$(echo ${TARGETPLATFORM} | cut -d / -f2) \
-    && if [ "$ARCH" = "amd64" ] || [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "i386" ]; then export ARCH=x64 ; fi \
-    && mkdir -p "$RUNNER_ASSETS_DIR" \
+
+FROM base AS runner
+
+ARG RUNNER_VERSION
+RUN mkdir -p /src \
+    && git -C /src clone -c advice.detachedHead=false --revision="refs/tags/v$RUNNER_VERSION" --depth=1 https://github.com/actions/runner.git runner
+
+ARG DOTNETSDK_VERSION=9.0.304
+ARG TARGETARCH
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+RUN --mount=type=cache,id=actions-runner-downloads-$TARGETARCH,target=/src/runner/_downloads \
+  --mount=type=cache,id=actions-runner-dotnetsdk-$TARGETARCH,target=/src/runner/_dotnetsdk \
+  case "${arch:=$TARGETARCH}" in \
+  amd64) arch=x64 ;; \
+  esac \
+  && cd /src/runner/src \
+  && sed -Ei 's/^DOTNETSDK_VERSION="[^"]*"/DOTNETSDK_VERSION="'"$DOTNETSDK_VERSION"'"/g' dev.sh \
+  && sed -Ei 's/"version": "[^"]*"/"version": "'"$DOTNETSDK_VERSION"'"/g' global.json \
+  && ./dev.sh layout Release "linux-$arch" \
+  && ./dev.sh package Release "linux-$arch" \
+  && install -D "../_package/actions-runner-linux-$arch-$RUNNER_VERSION.tar.gz" /opt/stage/actions-runner.tar.gz \
+  && rm -rf ../_layout ../_package
+
+FROM base
+RUN --mount=from=runner,source=/opt/stage/actions-runner.tar.gz,target=/run/stage/actions-runner.tar.gz,ro \
+    mkdir -p "$RUNNER_ASSETS_DIR" \
     && cd "$RUNNER_ASSETS_DIR" \
-    && curl -fLo runner.tar.gz https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-${ARCH}-${RUNNER_VERSION}.tar.gz \
-    && tar xzf ./runner.tar.gz \
-    && rm runner.tar.gz \
+    && tar xzf /run/stage/actions-runner.tar.gz \
     && ./bin/installdependencies.sh \
     && mv ./externals ./externalstmp \
     # libyaml-dev is required for ruby/setup-ruby action.
