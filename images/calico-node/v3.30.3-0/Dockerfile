@@ -14,14 +14,42 @@ ARG \
 FROM $BUILDER_IMAGE AS builder
 
 ARG VERSION HASH
-RUN wget https://github.com/projectcalico/calico/archive/refs/tags/v$VERSION.tar.gz \
-  && { echo "$HASH *v$VERSION.tar.gz" | sha256sum -c -; } \
-  && mkdir /go/calico && tar xf "v$VERSION.tar.gz" --strip-components=1 -C /go/calico \
-  && rm -- "v$VERSION.tar.gz"
+RUN --mount=source=patches,target=/run/stage/patches,ro \
+  --mount=type=cache,id=calico-node-go-modcache,target=/go/pkg/mod \
+  --mount=type=tmpfs,target=/tmp \
+  set -e \
+  && apk add --no-cache cmd:patch \
+  && wget -qO /tmp/src.tar.gz https://github.com/projectcalico/calico/archive/refs/tags/v$VERSION.tar.gz \
+  && { printf '%s */tmp/src.tar.gz' "$HASH" | sha256sum -c -; } \
+  && mkdir /go/calico \
+  && tar xf /tmp/src.tar.gz --strip-components=1 -C /go/calico \
+  && for f in /run/stage/patches/*.patch; do patch -d /go/calico -p1 -i "$f"; done \
+  && go -C /go/calico mod download -x
 
 WORKDIR /go/calico
-RUN CGO_ENABLED=0 go build -x -v -buildvcs=false -o calico-node -ldflags "-s -w -X main.VERSION=v$VERSION" ./node/cmd/calico-node
-RUN CGO_ENABLED=0 go build -x -v -buildvcs=false -o mountns -ldflags "-s -w -X main.VERSION=v$VERSION" ./node/cmd/mountns && chmod u+s mountns
+
+ARG TARGETARCH
+ENV GOARCH=$TARGETARCH CGO_ENABLED=0
+RUN --mount=type=cache,id=calico-node-go-modcache,target=/go/pkg/mod,ro \
+  --mount=type=cache,id=calico-node-go-cache-$TARGETARCH,target=/root/.cache/go-build \
+  --mount=type=tmpfs,target=/tmp \
+  --network=none \
+  go build \
+  -v -mod=readonly -trimpath -buildvcs=false \
+  -ldflags "-s -w -X main.VERSION=v$VERSION" \
+  -o calico-node \
+ ./node/cmd/calico-node
+
+RUN --mount=type=cache,id=calico-node-go-modcache,target=/go/pkg/mod,ro \
+  --mount=type=cache,id=calico-node-go-cache-$TARGETARCH,target=/root/.cache/go-build \
+  --mount=type=tmpfs,target=/tmp \
+  --network=none \
+  go build \
+  -v -mod=readonly -trimpath -buildvcs=false \
+  -ldflags "-s -w -X main.VERSION=v$VERSION" \
+  -o mountns \
+  ./node/cmd/mountns \
+  && chmod u+s mountns
 
 # For currently unknown reason, compiling in alpine 3.20 creates binary
 # which always segfaults. So we need to compile in alpine 3.19 still.

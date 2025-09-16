@@ -1,0 +1,54 @@
+From 0d1a1cf56347c879362ff50e86c9283a90e37296 Mon Sep 17 00:00:00 2001
+From: Tom Wieczorek <twieczorek@mirantis.com>
+Date: Mon, 15 Sep 2025 14:41:45 +0200
+Subject: [PATCH 1/5] Make IPNet test work on 32-bit architectures
+
+Delegate the publich NthIP method to a private one which accepts an
+int64. Use that private method in the tests.
+
+Signed-off-by: Tom Wieczorek <twieczorek@mirantis.com>
+---
+ libcalico-go/lib/net/ipnet.go      | 4 ++++
+ libcalico-go/lib/net/ipnet_test.go | 4 ++--
+ 2 files changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/libcalico-go/lib/net/ipnet.go b/libcalico-go/lib/net/ipnet.go
+index fb400e3382..60fe0ac101 100644
+--- a/libcalico-go/lib/net/ipnet.go
++++ b/libcalico-go/lib/net/ipnet.go
+@@ -74,6 +74,10 @@ func (i IPNet) Covers(n net.IPNet) bool {
+ }
+ 
+ func (i IPNet) NthIP(n int) IP {
++	return i.nthIP(int64(n))
++}
++
++func (i IPNet) nthIP(n int64) IP {
+ 	bigN := big.NewInt(int64(n))
+ 	return IncrementIP(IP{i.IP}, bigN)
+ }
+diff --git a/libcalico-go/lib/net/ipnet_test.go b/libcalico-go/lib/net/ipnet_test.go
+index 6871e747ae..4e12569ef1 100644
+--- a/libcalico-go/lib/net/ipnet_test.go
++++ b/libcalico-go/lib/net/ipnet_test.go
+@@ -48,7 +48,7 @@ func TestIPNet_Covers(t *testing.T) {
+ func TestIPNet_NthIP(t *testing.T) {
+ 	for _, test := range []struct {
+ 		CIDR       string
+-		N          int
++		N          int64
+ 		ExpectedIP string
+ 	}{
+ 		{CIDR: "10.0.0.0/8", N: 0, ExpectedIP: "10.0.0.0"},
+@@ -69,7 +69,7 @@ func TestIPNet_NthIP(t *testing.T) {
+ 			RegisterTestingT(t)
+ 			cidr := MustParseCIDR(test.CIDR)
+ 			expected := MustParseIP(test.ExpectedIP)
+-			ip := cidr.NthIP(test.N)
++			ip := cidr.nthIP(test.N)
+ 			Expect(ip.Equal(expected.IP)).To(BeTrue(),
+ 				fmt.Sprintf("%v != %v", ip.String(), expected.String()))
+ 		})
+-- 
+2.50.1
+

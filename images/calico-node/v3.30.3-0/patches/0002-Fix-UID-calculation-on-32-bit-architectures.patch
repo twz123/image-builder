@@ -1,0 +1,70 @@
+From 37ebe70c59668c8e18d43b02e79f90244cb1c9f6 Mon Sep 17 00:00:00 2001
+From: Tom Wieczorek <twieczorek@mirantis.com>
+Date: Mon, 15 Sep 2025 14:51:01 +0200
+Subject: [PATCH 2/5] Fix UID calculation on 32-bit architectures
+
+The previous logic was truncating everything towards zero. Also fix some
+trivial compile errors around integer sizes along the way.
+
+Signed-off-by: Tom Wieczorek <twieczorek@mirantis.com>
+---
+ .../lib/backend/k8s/conversion/conversion.go      | 15 +++++----------
+ .../k8s/conversion/workload_endpoint_default.go   |  6 +++---
+ 2 files changed, 8 insertions(+), 13 deletions(-)
+
+diff --git a/libcalico-go/lib/backend/k8s/conversion/conversion.go b/libcalico-go/lib/backend/k8s/conversion/conversion.go
+index 998cd4ff2d..53a528dfae 100644
+--- a/libcalico-go/lib/backend/k8s/conversion/conversion.go
++++ b/libcalico-go/lib/backend/k8s/conversion/conversion.go
+@@ -1364,19 +1364,14 @@ func reverseUID(uid uuid.UUID) (uuid.UUID, error) {
+ 	// v4 UUIDs used by Kubernetes use bits in the 7th byte to indicate the version and
+ 	// bits in the 9th byte to indicate the variant. Reverse the bits in the surrounding bytes but leave these intact.
+ 	nuid := make([]byte, len(uid))
+-	copy(nuid, uid[:])
+ 
+-	// Reverse the bits in the first 6 bytes.
+-	for ii := range uid[:6] {
+-		nuid[ii] = byte(bits.Reverse(uint(uid[ii])) >> 56)
++	// Reverse all bytes first.
++	for i := range len(uid) {
++		nuid[i] = bits.Reverse8(uid[i])
+ 	}
+ 
+-	// Reverse the bits in the 8th byte.
+-	nuid[7] = byte(bits.Reverse(uint(uid[7])) >> 56)
++	// Then restore version and variant.
++	nuid[6], nuid[8] = uid[6], uid[8]
+ 
+-	// Reverse the bits in the remaining bytes.
+-	for ii := range uid[9:] {
+-		nuid[ii+9] = byte(bits.Reverse(uint(uid[ii+9])) >> 56)
+-	}
+ 	return uuid.FromBytes(nuid)
+ }
+diff --git a/libcalico-go/lib/backend/k8s/conversion/workload_endpoint_default.go b/libcalico-go/lib/backend/k8s/conversion/workload_endpoint_default.go
+index 036e2173c7..6eac9dc96a 100644
+--- a/libcalico-go/lib/backend/k8s/conversion/workload_endpoint_default.go
++++ b/libcalico-go/lib/backend/k8s/conversion/workload_endpoint_default.go
+@@ -44,8 +44,8 @@ var (
+ 	maxBandwidth = resource.MustParse("1P")
+ 	// Burst sizes in bits
+ 	minBurst     = resource.MustParse("1k")
+-	defaultBurst = resource.MustParse("4Gi")                            // 512 Mi bytes
+-	maxBurst     = resource.MustParse(strconv.Itoa(math.MaxUint32 * 8)) // 34359738360, approx. 4Gi bytes
++	defaultBurst = resource.MustParse("4Gi")                                    // 512 Mi bytes
++	maxBurst     = resource.MustParse(strconv.FormatUint(math.MaxUint32*8, 10)) // 34359738360, approx. 4Gi bytes
+ 	// Peakrate in bits per second
+ 	// Peakrate should always be greater than bandwidth, so we make the min and max slightly higher than those
+ 	minPeakrate = resource.MustParse("1.01k")
+@@ -66,7 +66,7 @@ var (
+ 	minNumConnections = resource.MustParse("1")
+ 	// The connection limit is an uint32 (maximum value 4294967295).
+ 	// See https://github.com/torvalds/linux/blob/16b70698aa3ae7888826d0c84567c72241cf6713/include/uapi/linux/netfilter/xt_connlimit.h#L25
+-	maxNumConnections = resource.MustParse(strconv.Itoa(math.MaxUint32))
++	maxNumConnections = resource.MustParse(strconv.FormatUint(math.MaxUint32, 10))
+ )
+ 
+ type defaultWorkloadEndpointConverter struct{}
+-- 
+2.50.1
+

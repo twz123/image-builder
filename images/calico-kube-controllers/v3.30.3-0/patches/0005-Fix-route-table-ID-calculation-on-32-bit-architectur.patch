@@ -1,0 +1,68 @@
+From 2ea64515ca5e174d8f4ae807b476dcf58de50b76 Mon Sep 17 00:00:00 2001
+From: Tom Wieczorek <twieczorek@mirantis.com>
+Date: Mon, 15 Sep 2025 16:24:28 +0200
+Subject: [PATCH 5/5] Fix route table ID calculation on 32-bit architectures
+
+When specifying a range that would exceed 32 (signed) bits when added
+to the existing number of tables, the code silently wrapped around to
+negative numbers instead of rejecting the range.
+
+Signed-off-by: Tom Wieczorek <twieczorek@mirantis.com>
+---
+ felix/config/config_params_test.go |  3 +++
+ felix/config/param_types.go        | 10 ++++++----
+ 2 files changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/felix/config/config_params_test.go b/felix/config/config_params_test.go
+index e941de6fae..a85c57c1f4 100644
+--- a/felix/config/config_params_test.go
++++ b/felix/config/config_params_test.go
+@@ -779,6 +779,9 @@ var _ = DescribeTable("Config validation",
+ 	Entry("excessive RouteTableRanges off-by-one", map[string]string{
+ 		"RouteTableRanges": "1-65535,99999-99999",
+ 	}, false),
++	Entry("RouteTableRanges 32-bit wrap-around", map[string]string{
++		"RouteTableRanges": "1-65535,1-2147483647",
++	}, false),
+ 	Entry("invalid RouteTableRanges", map[string]string{
+ 		"RouteTableRanges": "abcde",
+ 	}, false),
+diff --git a/felix/config/param_types.go b/felix/config/param_types.go
+index 6d73514bb7..c3f60210d0 100644
+--- a/felix/config/param_types.go
++++ b/felix/config/param_types.go
+@@ -19,6 +19,7 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"math"
++	"math/bits"
+ 	"net"
+ 	"net/url"
+ 	"os"
+@@ -946,7 +947,7 @@ func (p *RouteTableRangesParam) Parse(raw string) (result interface{}, err error
+ 		return
+ 	}
+ 
+-	tablesTargeted := 0
++	var tablesTargeted uint
+ 	ranges := make([]idalloc.IndexRange, 0)
+ 	for _, r := range match {
+ 		// first match is the whole matching string - we only care about submatches
+@@ -972,10 +973,11 @@ func (p *RouteTableRangesParam) Parse(raw string) (result interface{}, err error
+ 		}
+ 
+ 		// The number of route table IDs in the current range.
+-		rangeLen := max - min + 1
++		rangeLen := uint(max - min + 1)
+ 
+-		tablesTargeted += rangeLen
+-		if tablesTargeted > routeTableRangeMaxTables {
++		// Overflow-safe addition
++		var carry uint
++		if tablesTargeted, carry = bits.Add(tablesTargeted, rangeLen, 0); carry != 0 || tablesTargeted > routeTableRangeMaxTables {
+ 			err = p.parseFailed(raw, "targets too many tables")
+ 			return
+ 		}
+-- 
+2.50.1
+

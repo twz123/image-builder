@@ -1,0 +1,45 @@
+From a12ddcdc193c885634c3a492d5e85fc6bd79e565 Mon Sep 17 00:00:00 2001
+From: Tom Wieczorek <twieczorek@mirantis.com>
+Date: Mon, 15 Sep 2025 16:13:46 +0200
+Subject: [PATCH 4/5] Fix off-by-one error when calculating route table ID
+ lengths
+
+Signed-off-by: Tom Wieczorek <twieczorek@mirantis.com>
+---
+ felix/config/config_params_test.go | 3 +++
+ felix/config/param_types.go        | 5 ++++-
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/felix/config/config_params_test.go b/felix/config/config_params_test.go
+index 1a434a9f58..e941de6fae 100644
+--- a/felix/config/config_params_test.go
++++ b/felix/config/config_params_test.go
+@@ -776,6 +776,9 @@ var _ = DescribeTable("Config validation",
+ 	Entry("excessive RouteTableRanges", map[string]string{
+ 		"RouteTableRanges": "1-100000000",
+ 	}, false),
++	Entry("excessive RouteTableRanges off-by-one", map[string]string{
++		"RouteTableRanges": "1-65535,99999-99999",
++	}, false),
+ 	Entry("invalid RouteTableRanges", map[string]string{
+ 		"RouteTableRanges": "abcde",
+ 	}, false),
+diff --git a/felix/config/param_types.go b/felix/config/param_types.go
+index a47cca28d4..6d73514bb7 100644
+--- a/felix/config/param_types.go
++++ b/felix/config/param_types.go
+@@ -971,7 +971,10 @@ func (p *RouteTableRangesParam) Parse(raw string) (result interface{}, err error
+ 			return
+ 		}
+ 
+-		tablesTargeted += max - min
++		// The number of route table IDs in the current range.
++		rangeLen := max - min + 1
++
++		tablesTargeted += rangeLen
+ 		if tablesTargeted > routeTableRangeMaxTables {
+ 			err = p.parseFailed(raw, "targets too many tables")
+ 			return
+-- 
+2.50.1
+
