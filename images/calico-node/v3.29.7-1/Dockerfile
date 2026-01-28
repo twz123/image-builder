@@ -12,17 +12,26 @@ ARG \
   IPTABLES_WRAPPERS_VERSION=f6ef44b2c449cca8f005b32dea9a4b497202dbef \
   IPTABLES_VERSION=1.8.11
 
-FROM $BUILDER_IMAGE AS builder
+FROM --platform=$BUILDPLATFORM $BUILDER_IMAGE AS builder
 
 ARG VERSION HASH
-RUN wget https://github.com/projectcalico/calico/archive/refs/tags/v$VERSION.tar.gz \
-  && { echo "$HASH *v$VERSION.tar.gz" | sha256sum -c -; } \
-  && mkdir /go/calico && tar xf "v$VERSION.tar.gz" --strip-components=1 -C /go/calico \
-  && rm -- "v$VERSION.tar.gz"
+WORKDIR /go/src/calico
+RUN --mount=type=tmpfs,target=/tmp \  
+  wget -qO /tmp/sources.tar.gz https://github.com/projectcalico/calico/archive/refs/tags/v$VERSION.tar.gz \
+  && { echo "$HASH */tmp/sources.tar.gz" | sha256sum -c -; } \
+  && tar xf /tmp/sources.tar.gz --strip-components=1
+RUN --mount=type=cache,id=calico-node-gomodcache,target=/go/pkg/mod \
+  go mod download
 
-WORKDIR /go/calico
-RUN CGO_ENABLED=0 go build -buildvcs=false -v -o calico-node -ldflags "-s -w -X main.VERSION=v$VERSION" ./node/cmd/calico-node && \
-  CGO_ENABLED=0 go build -buildvcs=false -v -o mountns -ldflags "-s -w -X main.VERSION=v$VERSION" ./node/cmd/mountns && chmod u+s mountns
+ARG TARGETARCH
+RUN --mount=type=cache,id=calico-node-gomodcache,target=/go/pkg/mod,ro \
+  --mount=type=cache,id=calico-node-gocache-$TARGETARCH,target=/root/.cache/go-build \
+  --network=none \
+  export GOARCH=$TARGETARCH \
+  && export CGO_ENABLED=0 \
+  && go build -mod=readonly -trimpath -buildvcs=false -ldflags "-s -w -X main.VERSION=v$VERSION" ./node/cmd/calico-node \
+  && go build -mod=readonly -trimpath -buildvcs=false -ldflags "-s -w -X main.VERSION=v$VERSION" ./node/cmd/mountns \
+  && chmod u+s mountns
 
 FROM $ALPINE_IMAGE AS ipset
 RUN apk add --no-cache \
@@ -73,15 +82,30 @@ RUN strip /usr/local/sbin/xtables-legacy-multi
 RUN strip /usr/local/sbin/xtables-nft-multi
 RUN scanelf -Rn /usr/local && file /usr/local/sbin/*
 
-FROM $BUILDER_IMAGE AS iptables-wrapper
-ARG IPTABLES_WRAPPERS_VERSION
-RUN apk add --no-cache git make
-RUN git clone https://github.com/kubernetes-sigs/iptables-wrappers.git /iptables-wrappers
-RUN cd /iptables-wrappers \
-    && git checkout "${IPTABLES_WRAPPERS_VERSION}" \
-    && make build \
-    && test -x bin/iptables-wrapper \
-    && test -x iptables-wrapper-installer.sh
+FROM --platform=$BUILDPLATFORM $BUILDER_IMAGE AS iptables-wrapper
+RUN apk add --no-cache patch make
+
+ARG IPTABLES_WRAPPER_VERSION=06cad2ec6cb5ed0945b383fb185424c0a67f55eb
+ARG IPTABLES_WRAPPER_HASH=fde9ccd22b337fd297180cd21938c0a82030187fc29aabb6800472295d62752a
+
+WORKDIR /go/src/iptables-wrapper
+RUN --mount=type=tmpfs,target=/tmp \
+  wget -qO /tmp/sources.tar.gz https://github.com/kubernetes-sigs/iptables-wrappers/archive/$IPTABLES_WRAPPER_VERSION.tar.gz \
+  && { echo "$IPTABLES_WRAPPER_HASH */tmp/sources.tar.gz" | sha256sum -c -; } \
+  && tar xf /tmp/sources.tar.gz --strip-components=1
+RUN --mount=type=cache,id=calico-node-gomodcache,target=/go/pkg/mod \
+  go mod download
+
+ARG TARGETARCH
+RUN --mount=source=files,target=/run/stage/files,ro \
+  --mount=type=tmpfs,target=/go/iptables-wrapper/bin \
+  --mount=type=cache,id=calico-node-gomodcache,target=/go/pkg/mod,ro \
+  --mount=type=cache,id=calico-node-gocache-$TARGETARCH,target=/root/.cache/go-build \
+  --network=none \
+  set -euo pipefail \
+  && patch </run/stage/files/iptables-wrapper.patch \
+  && GOARCH="$TARGETARCH" make build \
+  && mv bin/iptables-wrapper .
 
 # Build the image based on alpine
 FROM $ALPINE_IMAGE
@@ -92,15 +116,15 @@ ARG TARGETARCH
 RUN apk add --no-cache bash iputils iproute2 conntrack-tools runit ca-certificates
 
 # Copy the calico-node binary from the builder image
-COPY --from=builder /go/calico/calico-node /usr/bin/calico-node
-COPY --from=builder /go/calico/mountns /usr/bin/mountns
+COPY --from=builder /go/src/calico/calico-node /usr/bin/calico-node
+COPY --from=builder /go/src/calico/mountns /usr/bin/mountns
 
 COPY --from=ipset /usr/local/sbin/ipset /usr/sbin/ipset
 COPY --from=ipset /src/ipset/ChangeLog /usr/share/doc/ipset/ChangeLog
 
 # Copy the config etc filesystem from builder
-COPY --from=builder /go/calico/node/filesystem/ /
-COPY --from=builder /go/calico/confd/etc/ /etc/
+COPY --from=builder /go/src/calico/node/filesystem/ /
+COPY --from=builder /go/src/calico/confd/etc/ /etc/
 
 # Change permissions to make confd templates and output available in /etc/calico
 # to all container users.
@@ -110,13 +134,14 @@ RUN chgrp -R 0 /etc/calico && \
 COPY --from=bird /bird* /usr/bin/
 
 # Copy iptables and wrappers
-COPY --from=iptables /usr/local/sbin/xtables-* /sbin/
-COPY --from=iptables /usr/local/sbin/iptables* /sbin/
-COPY --from=iptables /usr/local/sbin/ip6tables* /sbin/
-COPY --from=iptables-wrapper /iptables-wrappers/bin/iptables-wrapper /
-COPY --from=iptables-wrapper /iptables-wrappers/iptables-wrapper-installer.sh /
-
-RUN /iptables-wrapper-installer.sh --no-sanity-check
+COPY --from=iptables \
+  /usr/local/sbin/xtables-* \
+  /usr/local/sbin/iptables* \
+  /usr/local/sbin/ipt6ables* \
+  /sbin/
+RUN --mount=from=iptables-wrapper,source=/go/src/iptables-wrapper,target=/run/stage/iptables-wrapper,ro \
+  cp -a /run/stage/iptables-wrapper/iptables-wrapper-installer.sh /run/stage/iptables-wrapper/iptables-wrapper / \
+  && /iptables-wrapper-installer.sh
 
 RUN echo "hosts: files dns" > /etc/nsswitch.conf
 
