@@ -7,7 +7,8 @@ ARG \
   IPSET_HASH=5a43c790abf157a55db5a9a22cb5f28a225f5c7969beda81566a2259aa82c9d852979eb805b11b4347f47c6a0c2cc4de6f14e4733bee5b562844422a45fb9dab \
   # https://github.com/projectcalico/calico/blob/v3.29.7/metadata.mk#L36
   BIRD_VERSION=v0.3.3-211-g9111ec3c \
-  BUILDER_IMAGE=docker.io/library/golang:1.24.11-alpine3.21 \
+  ALPINE_IMAGE=docker.io/library/alpine:3.23.3 \
+  BUILDER_IMAGE=docker.io/library/golang:1.25.6-alpine3.23 \
   IPTABLES_WRAPPERS_VERSION=f6ef44b2c449cca8f005b32dea9a4b497202dbef \
   IPTABLES_VERSION=1.8.11
 
@@ -23,9 +24,7 @@ WORKDIR /go/calico
 RUN CGO_ENABLED=0 go build -buildvcs=false -v -o calico-node -ldflags "-s -w -X main.VERSION=v$VERSION" ./node/cmd/calico-node && \
   CGO_ENABLED=0 go build -buildvcs=false -v -o mountns -ldflags "-s -w -X main.VERSION=v$VERSION" ./node/cmd/mountns && chmod u+s mountns
 
-# For currently unknown reason, compiling in alpine 3.20 creates binary
-# which always segfaults. So we need to compile in alpine 3.19 still.
-FROM docker.io/library/alpine:3.21 AS ipset
+FROM $ALPINE_IMAGE AS ipset
 RUN apk add --no-cache \
   build-base pkgconf curl \
   libmnl-dev libmnl-static
@@ -48,7 +47,7 @@ RUN ipset -h
 FROM docker.io/calico/bird:$BIRD_VERSION-$TARGETARCH$TARGETVARIANT AS bird
 
 # Build iptables
-FROM docker.io/library/alpine:3.21 AS iptables
+FROM $ALPINE_IMAGE AS iptables
 ARG IPTABLES_VERSION
 
 RUN apk add build-base curl pkgconf \
@@ -85,7 +84,7 @@ RUN cd /iptables-wrappers \
     && test -x iptables-wrapper-installer.sh
 
 # Build the image based on alpine
-FROM docker.io/library/alpine:3.20
+FROM $ALPINE_IMAGE
 LABEL org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.source="https://github.com/projectcalico/calico"
 ARG TARGETARCH
