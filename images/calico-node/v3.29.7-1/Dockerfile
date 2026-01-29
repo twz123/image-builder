@@ -21,12 +21,10 @@ RUN --mount=type=tmpfs,target=/tmp \
   wget -qO /tmp/sources.tar.gz https://github.com/projectcalico/calico/archive/refs/tags/v$VERSION.tar.gz \
   && { echo "$HASH */tmp/sources.tar.gz" | sha256sum -c -; } \
   && tar xf /tmp/sources.tar.gz --strip-components=1
-RUN --mount=type=cache,id=calico-node-gomodcache,target=/go/pkg/mod \
-  go mod download
+RUN go mod download
 
 ARG TARGETARCH
-RUN --mount=type=cache,id=calico-node-gomodcache,target=/go/pkg/mod,ro \
-  --mount=type=cache,id=calico-node-gocache-$TARGETARCH,target=/root/.cache/go-build \
+RUN --mount=type=cache,id=calico-node-gocache-$TARGETARCH,target=/root/.cache/go-build \
   --network=none \
   export GOARCH=$TARGETARCH \
   && export CGO_ENABLED=0 \
@@ -66,14 +64,16 @@ RUN --mount=type=tmpfs,target=/tmp \
 
 FROM $ALPINE_IMAGE AS bird
 RUN apk add --no-cache gcc musl-dev make autoconf flex bison linux-headers
-ARG TARGETARCH
 RUN --mount=from=bird-sources,source=/bird,target=/run/stage/bird,ro \
-  --mount=type=tmpfs,target=/build \
+  --mount=type=tmpfs,target=/bird \
   --network=none \
-  cp -a /run/stage/bird /build/ \
-  && cd /build/bird \
-  && ARCH=$TARGETARCH DIST=/dist OBJ=obj ./create_binaries.sh \
-  && find /dist/$TARGETARCH/ -type f -maxdepth 1 -exec strip '{}' ';'
+  cp -a /run/stage/bird / \
+  && cd /bird \
+  && export ARCH=$(uname -m) \
+  && DIST=dist OBJ=obj sh -x ./create_binaries.sh \
+  && find dist/ -type f -mindepth 2 -maxdepth 2 -exec strip '{}' ';' \
+  && mkdir /dist \
+  && find dist/ -type f -mindepth 2 -maxdepth 2 -exec mv '{}' /dist ';'
 
 
 # Build iptables
@@ -114,13 +114,11 @@ RUN --mount=type=tmpfs,target=/tmp \
   wget -qO /tmp/sources.tar.gz https://github.com/kubernetes-sigs/iptables-wrappers/archive/$IPTABLES_WRAPPER_VERSION.tar.gz \
   && { echo "$IPTABLES_WRAPPER_HASH */tmp/sources.tar.gz" | sha256sum -c -; } \
   && tar xf /tmp/sources.tar.gz --strip-components=1
-RUN --mount=type=cache,id=calico-node-gomodcache,target=/go/pkg/mod \
-  go mod download
+RUN go mod download
 
 ARG TARGETARCH
 RUN --mount=source=files,target=/run/stage/files,ro \
   --mount=type=tmpfs,target=/go/iptables-wrapper/bin \
-  --mount=type=cache,id=calico-node-gomodcache,target=/go/pkg/mod,ro \
   --mount=type=cache,id=calico-node-gocache-$TARGETARCH,target=/root/.cache/go-build \
   --network=none \
   set -euo pipefail \
@@ -152,7 +150,7 @@ COPY --from=builder /go/src/calico/confd/etc/ /etc/
 RUN chgrp -R 0 /etc/calico && \
     chmod -R g=u /etc/calico
 
-COPY --from=bird /dist/$TARGETARCH/* /usr/bin/
+COPY --from=bird /dist/* /usr/bin/
 
 # Copy iptables and wrappers
 COPY --from=iptables \
