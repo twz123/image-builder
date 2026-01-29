@@ -24,7 +24,7 @@ RUN --mount=type=tmpfs,target=/tmp \
 RUN go mod download
 
 ARG TARGETARCH
-RUN --mount=type=cache,id=calico-node-gocache-$TARGETARCH,target=/root/.cache/go-build \
+RUN --mount=type=cache,id=calico-gocache-$TARGETARCH,target=/root/.cache/go-build \
   --network=none \
   export GOARCH=$TARGETARCH \
   && export CGO_ENABLED=0 \
@@ -119,7 +119,7 @@ RUN go mod download
 ARG TARGETARCH
 RUN --mount=source=files,target=/run/stage/files,ro \
   --mount=type=tmpfs,target=/go/iptables-wrapper/bin \
-  --mount=type=cache,id=calico-node-gocache-$TARGETARCH,target=/root/.cache/go-build \
+  --mount=type=cache,id=calico-gocache-$TARGETARCH,target=/root/.cache/go-build \
   --network=none \
   set -euo pipefail \
   && patch </run/stage/files/iptables-wrapper.patch \
