@@ -1,0 +1,33 @@
+--- Makefile
++++ Makefile
+@@ -7,7 +7,7 @@ $(BIN_DIR):
+ 	mkdir -p $(BIN_DIR)
+ 
+ build: $(BIN_DIR)
+-	CGO_ENABLED=0 $(GO) build -ldflags='-s -w -extldflags="-static" -buildid=""' -trimpath -o $(BIN_DIR)/iptables-wrapper github.com/kubernetes-sigs/iptables-wrappers
++	CGO_ENABLED=0 $(GO) build -ldflags='-s -w -extldflags="-static" -buildid=""' -trimpath -buildvcs=false -o $(BIN_DIR)/iptables-wrapper github.com/kubernetes-sigs/iptables-wrappers
+ 
+ vet: ## Run go vet against code.
+ 	$(GO) vet ./...
+--- iptables-wrapper-installer.sh
++++ iptables-wrapper-installer.sh
+@@ -85,11 +85,15 @@ done
+ 
+ if [ -z "${no_sanity_check}" ]; then
+     # Ensure dependencies are installed
+-    if ! version=$("${sbin}/iptables-nft" --version 2> /dev/null); then
+-        echo "ERROR: iptables-nft is not installed" 1>&2
+-        exit 1
++    # NOTE(k0s): iptables-nft will fail under QEMU with the below error
++    # message, hence use iptables-legacy for the version check
++    if ! version=$("${sbin}/iptables-nft" --version 2>&1); then
++        if [ "$version" != "iptables: Failed to initialize nft: Protocol not supported" ]; then
++            echo "ERROR: iptables-nft is not installed" 1>&2
++            exit 1
++        fi
+     fi
+-    if ! "${sbin}/iptables-legacy" --version > /dev/null 2>&1; then
++    if ! version=$("${sbin}/iptables-legacy" --version 2> /dev/null); then
+         echo "ERROR: iptables-legacy is not installed" 1>&2
+         exit 1
+     fi
