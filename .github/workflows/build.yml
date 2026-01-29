@@ -95,6 +95,7 @@ jobs:
 
           case "$FOLDER" in
           envoy*) unsupportedPlatforms=(linux/arm/v7 linux/riscv64) ;;
+          calico-node*) unsupportedPlatforms=() ;;
           actions-runner* | calico*) unsupportedPlatforms=(linux/riscv64) ;;
           *) unsupportedPlatforms=() ;;
           esac
