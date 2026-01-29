@@ -19,7 +19,7 @@ ARG VERSION HASH
 WORKDIR /go/src/calico
 RUN --mount=type=tmpfs,target=/tmp \
   wget -qO /tmp/sources.tar.gz https://github.com/projectcalico/calico/archive/refs/tags/v$VERSION.tar.gz \
-  && { echo "$HASH */tmp/sources.tar.gz" | sha256sum -c -; } \
+  && { echo $HASH /tmp/sources.tar.gz | sha256sum -c -; } \
   && tar xf /tmp/sources.tar.gz --strip-components=1
 RUN go mod download
 
@@ -39,7 +39,7 @@ RUN apk add --no-cache \
 
 ARG IPSET_VERSION IPSET_HASH
 RUN curl -sSLo ipset.tar.bz2 "http://ipset.netfilter.org/ipset-$IPSET_VERSION.tar.bz2" \
-  && { echo "$IPSET_HASH *ipset.tar.bz2" | sha512sum -c -; } \
+  && { echo $IPSET_HASH ipset.tar.bz2 | sha512sum -c -; } \
   && mkdir -p /src/ipset && tar xf "ipset.tar.bz2" --strip-components=1 -C /src/ipset \
   && rm -- "ipset.tar.bz2"
 
@@ -58,7 +58,7 @@ WORKDIR /bird
 RUN --mount=type=tmpfs,target=/tmp \
   wget -qO /tmp/sources.tar.gz https://github.com/projectcalico/bird/archive/$BIRD_COMMIT.tar.gz \
   && sha256sum -b /tmp/sources.tar.gz \
-  && { echo "$BIRD_HASH */tmp/sources.tar.gz" | sha256sum -c -; } \
+  && { echo $BIRD_HASH /tmp/sources.tar.gz | sha256sum -c -; } \
   && tar xf /tmp/sources.tar.gz --strip-components=1
 
 
@@ -112,7 +112,7 @@ ARG IPTABLES_WRAPPER_HASH=fde9ccd22b337fd297180cd21938c0a82030187fc29aabb6800472
 WORKDIR /go/src/iptables-wrapper
 RUN --mount=type=tmpfs,target=/tmp \
   wget -qO /tmp/sources.tar.gz https://github.com/kubernetes-sigs/iptables-wrappers/archive/$IPTABLES_WRAPPER_VERSION.tar.gz \
-  && { echo "$IPTABLES_WRAPPER_HASH */tmp/sources.tar.gz" | sha256sum -c -; } \
+  && { echo $IPTABLES_WRAPPER_HASH /tmp/sources.tar.gz | sha256sum -c -; } \
   && tar xf /tmp/sources.tar.gz --strip-components=1
 RUN go mod download
 

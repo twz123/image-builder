@@ -10,7 +10,7 @@ ARG VERSION HASH
 WORKDIR /go/src/calico
 RUN --mount=type=tmpfs,target=/tmp \
   wget -qO /tmp/sources.tar.gz https://github.com/projectcalico/calico/archive/refs/tags/v$VERSION.tar.gz \
-  && { echo "$HASH */tmp/sources.tar.gz" | sha256sum -c -; } \
+  && { echo $HASH /tmp/sources.tar.gz | sha256sum -c -; } \
   && tar xf /tmp/sources.tar.gz --strip-components=1
 RUN go mod download
 

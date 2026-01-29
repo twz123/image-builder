@@ -9,63 +9,80 @@ ARG \
   #
   # https://github.com/projectcalico/calico/blob/v3.29.7/cni-plugin/Makefile#L169
   # https://github.com/projectcalico/flannel-cni-plugin/commits/main/?since=2024-09-12&until=2025-11-20
-  FLANNEL_VERSION=5a977558e9fbbf93ff7ba927847fbca194e02416 \
+  FLANNEL_VERSION=v1.2.0-flannel2-go1.22.7 \
   #
   # https://github.com/projectcalico/calico/blob/v3.29.7/cni-plugin/Makefile#L150
   # https://github.com/projectcalico/containernetworking-plugins/commits/master/?since=2025-01-27&until=2025-11-20
-  CNI_VERSION=9ffe547cb3b66f80dd32a00fc69a6d0082b55321 \
-  BUILDER_IMAGE=docker.io/library/golang:1.24.11-alpine3.21
+  CNI_PLUGINS_VERSION=9ffe547cb3b66f80dd32a00fc69a6d0082b55321 \
+  CNI_PLUGINS_HASH=97162c06333ba91c1d4ab8085ed4be09a81a45216c594eb3011332c953a501ba
 
-FROM $BUILDER_IMAGE AS builder
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.25.6-alpine3.23 AS build-base
 
+
+FROM build-base AS builder
 ARG VERSION HASH
-RUN wget https://github.com/projectcalico/calico/archive/refs/tags/v$VERSION.tar.gz \
-  && { echo "$HASH *v$VERSION.tar.gz" | sha256sum -c -; } \
-  && mkdir /go/calico && tar xf "v$VERSION.tar.gz" --strip-components=1 -C /go/calico \
-  && rm -- "v$VERSION.tar.gz"
+WORKDIR /go/src/calico
+RUN --mount=type=tmpfs,target=/tmp \
+  wget -qO /tmp/sources.tar.gz https://github.com/projectcalico/calico/archive/refs/tags/v$VERSION.tar.gz \
+  && { echo $HASH /tmp/sources.tar.gz | sha256sum -c -; } \
+  && tar xf /tmp/sources.tar.gz --strip-components=1
+RUN go mod download
 
-WORKDIR /go/calico
-RUN CGO_ENABLED=0 go build \
-  -v -buildvcs=false \
-  -o /out/opt/cni/bin/ \
-  -ldflags "-s -w -X main.VERSION=v$VERSION" \
-  ./cni-plugin/cmd/calico ./cni-plugin/cmd/install
+ARG TARGETARCH
+RUN --mount=type=cache,id=calico-gocache-$TARGETARCH,target=/root/.cache/go-build \
+  --network=none \
+  export GOARCH=$TARGETARCH \
+  && export CGO_ENABLED=0 \
+  && go build \
+    -mod=readonly -trimpath -buildvcs=false \
+    -o /out/ \
+    -ldflags "-s -w -X main.VERSION=v$VERSION" \
+    ./cni-plugin/cmd/calico ./cni-plugin/cmd/install
 
 RUN set -e \
-  && cd /out/opt/cni/bin \
+  && cd /out \
   && ln -s calico calico-ipam
 
-FROM $BUILDER_IMAGE AS flannel
+
+FROM build-base AS flannel-cni-plugin
+RUN apk add --no-cache git bash
+
 ARG FLANNEL_VERSION
+WORKDIR /go/src/flannel-cni-plugin
+RUN git -C .. -c advice.detachedHead=false clone -b $FLANNEL_VERSION https://github.com/projectcalico/flannel-cni-plugin.git
+RUN go mod download
 
-RUN apk add --no-cache git make bash
-RUN mkdir -p /go/flannel
-WORKDIR /go/flannel
+ARG TARGETARCH
+RUN --mount=type=cache,id=calico-gocache-$TARGETARCH,target=/root/.cache/go-build \
+  --network=none \
+  GOARCH=$TARGETARCH TAG=$FLANNEL_VERSION scripts/build_flannel.sh
 
-RUN git clone --single-branch https://github.com/projectcalico/flannel-cni-plugin.git /go/flannel \
-  && git reset --hard $FLANNEL_VERSION
 
-RUN make build_linux
+FROM build-base AS cni-plugins
+RUN apk add --no-cache make bash
 
-FROM $BUILDER_IMAGE AS cni-bins
-ARG CNI_VERSION
+ARG CNI_PLUGINS_VERSION CNI_PLUGINS_HASH
+WORKDIR /go/src/cni-plugins
+RUN --mount=type=tmpfs,target=/tmp \
+  wget -qO /tmp/sources.tar.gz https://github.com/projectcalico/containernetworking-plugins/archive/$CNI_PLUGINS_VERSION.tar.gz \
+  && { echo $CNI_PLUGINS_HASH /tmp/sources.tar.gz | sha256sum -c -; } \
+  && tar xf /tmp/sources.tar.gz --strip-components=1
 
-RUN apk add --no-cache git make bash
-RUN mkdir -p /go/cni
-WORKDIR /go/cni
-
-RUN git clone --single-branch https://github.com/projectcalico/containernetworking-plugins.git /go/cni \
-  && git reset --hard $CNI_VERSION
-
-RUN GOFLAGS='-buildvcs=false' CGO_ENABLED=0 ./build_linux.sh -ldflags "-X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=$(GIT_VERSION)"
+ARG TARGETARCH
+RUN --network=none \
+  export GOARCH=$TARGETARCH \
+  && export CGO_ENABLED=0 \
+  && export GOFLAGS='-trimpath -buildvcs=false' \
+  && ./build_linux.sh \
+    -ldflags "-X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=$CNI_PLUGINS_VERSION"
 
 
 FROM scratch
 LABEL org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.source="https://github.com/projectcalico/calico"
-COPY --from=builder /out/ /
-COPY --from=flannel /go/flannel/dist/flannel-* /opt/cni/bin/flannel
-COPY --from=cni-bins /go/cni/bin/* /opt/cni/bin/
+COPY --from=builder /out/* /opt/cni/bin/
+COPY --from=flannel-cni-plugin /go/src/flannel-cni-plugin/dist/flannel-* /opt/cni/bin/flannel
+COPY --from=cni-plugins /go/src/cni-plugins/bin/* /opt/cni/bin/
 ENV PATH=/opt/cni/bin
 WORKDIR /opt/cni/bin
 CMD ["/opt/cni/bin/install"]
