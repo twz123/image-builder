@@ -6,7 +6,8 @@ ARG \
   IPSET_VERSION=7.23 \
   IPSET_HASH=5a43c790abf157a55db5a9a22cb5f28a225f5c7969beda81566a2259aa82c9d852979eb805b11b4347f47c6a0c2cc4de6f14e4733bee5b562844422a45fb9dab \
   # https://github.com/projectcalico/calico/blob/v3.29.7/metadata.mk#L36
-  BIRD_VERSION=v0.3.3-211-g9111ec3c \
+  BIRD_COMMIT=9111ec3c3ff3e769727a5940d3d829a0be8b5201 \
+  BIRD_HASH=5aaf11e2f0ba3c44cdf27746c0b5da631befd67636579ff5e2ac65b144bee0b3 \
   ALPINE_IMAGE=docker.io/library/alpine:3.23.3 \
   BUILDER_IMAGE=docker.io/library/golang:1.25.6-alpine3.23 \
   IPTABLES_WRAPPERS_VERSION=f6ef44b2c449cca8f005b32dea9a4b497202dbef \
@@ -16,7 +17,7 @@ FROM --platform=$BUILDPLATFORM $BUILDER_IMAGE AS builder
 
 ARG VERSION HASH
 WORKDIR /go/src/calico
-RUN --mount=type=tmpfs,target=/tmp \  
+RUN --mount=type=tmpfs,target=/tmp \
   wget -qO /tmp/sources.tar.gz https://github.com/projectcalico/calico/archive/refs/tags/v$VERSION.tar.gz \
   && { echo "$HASH */tmp/sources.tar.gz" | sha256sum -c -; } \
   && tar xf /tmp/sources.tar.gz --strip-components=1
@@ -52,8 +53,28 @@ RUN make install
 # Just a sanity check that it's not segfaulting
 RUN ipset -h
 
-# TODO We should build bird bins from source
-FROM docker.io/calico/bird:$BIRD_VERSION-$TARGETARCH$TARGETVARIANT AS bird
+
+FROM --platform=$BUILDPLATFORM $ALPINE_IMAGE AS bird-sources
+ARG BIRD_COMMIT BIRD_HASH
+WORKDIR /bird
+RUN --mount=type=tmpfs,target=/tmp \
+  wget -qO /tmp/sources.tar.gz https://github.com/projectcalico/bird/archive/$BIRD_COMMIT.tar.gz \
+  && sha256sum -b /tmp/sources.tar.gz \
+  && { echo "$BIRD_HASH */tmp/sources.tar.gz" | sha256sum -c -; } \
+  && tar xf /tmp/sources.tar.gz --strip-components=1
+
+
+FROM $ALPINE_IMAGE AS bird
+RUN apk add --no-cache gcc musl-dev make autoconf flex bison linux-headers
+ARG TARGETARCH
+RUN --mount=from=bird-sources,source=/bird,target=/run/stage/bird,ro \
+  --mount=type=tmpfs,target=/build \
+  --network=none \
+  cp -a /run/stage/bird /build/ \
+  && cd /build/bird \
+  && ARCH=$TARGETARCH DIST=/dist OBJ=obj ./create_binaries.sh \
+  && find /dist/$TARGETARCH/ -type f -maxdepth 1 -exec strip '{}' ';'
+
 
 # Build iptables
 FROM $ALPINE_IMAGE AS iptables
@@ -131,7 +152,7 @@ COPY --from=builder /go/src/calico/confd/etc/ /etc/
 RUN chgrp -R 0 /etc/calico && \
     chmod -R g=u /etc/calico
 
-COPY --from=bird /bird* /usr/bin/
+COPY --from=bird /dist/$TARGETARCH/* /usr/bin/
 
 # Copy iptables and wrappers
 COPY --from=iptables \
