@@ -1,26 +1,31 @@
-# https://github.com/projectcalico/calico/blob/v3.29.1/kube-controllers/Dockerfile
+# https://github.com/projectcalico/calico/blob/v3.29.7/kube-controllers/Dockerfile
 
 ARG \
   VERSION=3.29.7 \
   HASH=d60fd083ad0279a4bd20109d01689e4eecb7a5e8c6d5e8be2b1718e6057f85e9
 
-FROM docker.io/library/golang:1.24.11-alpine3.21 AS builder
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.25.6-alpine3.23 AS builder
 
 ARG VERSION HASH
-RUN wget https://github.com/projectcalico/calico/archive/refs/tags/v$VERSION.tar.gz \
-  && { echo "$HASH *v$VERSION.tar.gz" | sha256sum -c -; } \
-  && mkdir /go/calico && tar xf "v$VERSION.tar.gz" --strip-components=1 -C /go/calico \
-  && rm -- "v$VERSION.tar.gz"
+WORKDIR /go/src/calico
+RUN --mount=type=tmpfs,target=/tmp \
+  wget -qO /tmp/sources.tar.gz https://github.com/projectcalico/calico/archive/refs/tags/v$VERSION.tar.gz \
+  && { echo "$HASH */tmp/sources.tar.gz" | sha256sum -c -; } \
+  && tar xf /tmp/sources.tar.gz --strip-components=1
+RUN go mod download
 
-WORKDIR /go/calico
-RUN mkdir -p /out/usr/bin \
-  && CGO_ENABLED=0 go build \
-    -v -buildvcs=false \
+ARG TARGETARCH
+RUN --mount=type=cache,id=calico-gocache-$TARGETARCH,target=/root/.cache/go-build \
+  --network=none \
+  export GOARCH=$TARGETARCH \
+  && export CGO_ENABLED=0 \
+  && go build \
+    -mod=readonly -trimpath -buildvcs=false \
     -ldflags "-s -w -X main.VERSION=v$VERSION" \
     -o /out/usr/bin/kube-controllers \
     ./kube-controllers/cmd/kube-controllers \
-  && CGO_ENABLED=0 go build \
-    -v -buildvcs=false \
+  && go build \
+    -mod=readonly -trimpath -buildvcs=false \
     -ldflags "-s -w -X main.VERSION=v$VERSION" \
     -o /out/usr/bin/check-status \
     ./kube-controllers/cmd/check-status
