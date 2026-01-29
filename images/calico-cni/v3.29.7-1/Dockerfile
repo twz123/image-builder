@@ -55,7 +55,7 @@ RUN go mod download
 ARG TARGETARCH
 RUN --mount=type=cache,id=calico-gocache-$TARGETARCH,target=/root/.cache/go-build \
   --network=none \
-  GOARCH=$TARGETARCH TAG=$FLANNEL_VERSION scripts/build_flannel.sh
+  GOARCH=$TARGETARCH TAG=$FLANNEL_VERSION EXTRA_LDFLAGS=-s scripts/build_flannel.sh
 
 
 FROM build-base AS cni-plugins
@@ -74,7 +74,7 @@ RUN --network=none \
   && export CGO_ENABLED=0 \
   && export GOFLAGS='-trimpath -buildvcs=false' \
   && ./build_linux.sh \
-    -ldflags "-X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=$CNI_PLUGINS_VERSION"
+    -ldflags "-s -w -X github.com/containernetworking/plugins/pkg/utils/buildversion.BuildVersion=$CNI_PLUGINS_VERSION"
 
 
 FROM scratch
