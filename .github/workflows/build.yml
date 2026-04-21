@@ -96,6 +96,7 @@ jobs:
           case "$FOLDER" in
           envoy*) unsupportedPlatforms=(linux/arm/v7 linux/riscv64) ;;
           actions-runner*) unsupportedPlatforms=(linux/riscv64) ;;
+          traefik*) defaultPlatforms+=(windows/amd64) ;;
           *) unsupportedPlatforms=() ;;
           esac
 
@@ -125,6 +126,11 @@ jobs:
         with:
           persist-credentials: false
           show-progress: false
+
+      - name: Determine SOURCE_DATE_EPOCH
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >>"$GITHUB_ENV"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
@@ -165,8 +171,8 @@ jobs:
           context: ${{ format('images/{0}', matrix.folder) }}
           build-contexts: ${{ join(fromJSON(steps.build-contexts.outputs.list), '\n') }}
           platforms: ${{ steps.image.outputs.platforms }}
-          push: true
           tags: ${{ steps.image.outputs.image-name }}
+          outputs: type=image,push=true,rewrite-timestamp=true
 
       - name: Run Trivy vulnerability
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
