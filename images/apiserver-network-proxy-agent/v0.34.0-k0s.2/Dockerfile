@@ -1,10 +1,11 @@
 ARG \
   VERSION=0.34.0 \
   HASH=f338b1db93558121252eec01113a9adcf542d2c23d6c63a092cf9d2ae95317ac \
-  DEFAULT_BASEIMAGE=gcr.io/distroless/static-debian12:nonroot@sha256:e8a4044e0b4ae4257efa45fc026c0bc30ad320d43bd4c1a7d5271bd241e386d0 \
-  RISCV_BASEIMAGE=ghcr.io/go-riscv/distroless/static-unstable:latest@sha256:0bd27d7ab1f1863abecdebe207870375364fddc1d0ae87179ef176403d04e27b
+  BUILDIMAGE=docker.io/library/golang:1.26.2-alpine3.23 \
+  DISTROLESS_BASEIMAGE=gcr.io/distroless/static-debian13:nonroot@sha256:e3f945647ffb95b5839c07038d64f9811adf17308b9121d8a2b87b6a22a80a39 \
+  WINDOWS_VERSION=
 
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.25.3-alpine3.22 AS build
+FROM --platform=$BUILDPLATFORM $BUILDIMAGE AS sources
 ENV CGO_ENABLED=0 GOTELEMETRY=off
 WORKDIR /go/src/kubernetes-sigs/apiserver-network-proxy
 
@@ -13,30 +14,38 @@ RUN --mount=type=cache,id=konnectivity-go-modcache,target=/go/pkg/mod \
   --mount=type=tmpfs,target=/tmp \
   set -e \
   && wget -qO /tmp/src.tar.gz https://github.com/kubernetes-sigs/apiserver-network-proxy/archive/refs/tags/v$VERSION.tar.gz \
-  && { printf '%s */tmp/src.tar.gz' "$HASH" | sha256sum -c -; } \
-  && tar xf /tmp/src.tar.gz --strip-components=1 \
-  && go mod download -x
+  && { echo $HASH /tmp/src.tar.gz | sha256sum -c -; } || { sha256sum /tmp/src.tar.gz; exit 1; } \
+  && tar xf /tmp/src.tar.gz --strip-components=1
+RUN go mod download
 
-ARG TARGETARCH
-ENV GOARCH=$TARGETARCH
-RUN --mount=type=cache,id=konnectivity-go-modcache,target=/go/pkg/mod,ro \
-  --mount=type=cache,id=konnectivity-agent-go-cache-$TARGETARCH,target=/root/.cache/go-build \
-  --mount=type=tmpfs,target=/tmp \
+
+FROM sources AS binary
+ARG TARGETOS TARGETARCH SOURCE_DATE_EPOCH
+ENV GOOS=$TARGETOS GOARCH=$TARGETARCH
+RUN --mount=type=cache,id=konnectivity-agent-go-cache-$TARGETOS-$TARGETARCH,target=/root/.cache/go-build \
   --network=none \
   go build \
-  -v -mod=readonly -trimpath -buildvcs=false \
-  -ldflags "-s -w" \
+  -mod=readonly -trimpath -buildvcs=false \
+  -o /out/proxy-agent \
+   -ldflags "-s -w" \
   ./cmd/agent
 
-FROM $DEFAULT_BASEIMAGE AS final-amd64
-FROM $DEFAULT_BASEIMAGE AS final-arm64
-FROM $DEFAULT_BASEIMAGE AS final-arm
-FROM $RISCV_BASEIMAGE   AS final-riscv64
-# nobody:nobody
-USER 65534:65534
 
-FROM final-$TARGETARCH
-LABEL org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.source="https://github.com/kubernetes-sigs/apiserver-network-proxy"
-COPY --from=build /go/src/kubernetes-sigs/apiserver-network-proxy/agent /proxy-agent
+FROM $DISTROLESS_BASEIMAGE AS final-linux
+COPY --from=binary /out/proxy-agent /
 ENTRYPOINT ["/proxy-agent"]
+
+
+FROM mcr.microsoft.com/windows/nanoserver:ltsc$WINDOWS_VERSION AS final-windows
+COPY --from=binary /out/proxy-agent /proxy-agent.exe
+ENTRYPOINT ["proxy-agent.exe"]
+
+
+FROM final-$TARGETOS
+ARG VERSION
+LABEL org.opencontainers.image.title="konnectivity-agent for k0s" \
+  org.opencontainers.image.vendor=k0sproject \
+  org.opencontainers.image.source=https://github.com/k0sproject/image-builder \
+  org.opencontainers.image.licenses=Apache-2.0 \
+  org.opencontainers.image.url=https://github.com/kubernetes-sigs/apiserver-network-proxy \
+  org.opencontainers.image.version="v$VERSION"

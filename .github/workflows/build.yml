@@ -100,6 +100,11 @@ jobs:
           *) unsupportedPlatforms=() ;;
           esac
 
+          case "$FOLDER" in
+          apiserver-network-proxy*) includeWindows=true ;;
+          *) includeWindows= ;;
+          esac
+
           buildPlatforms=()
           for p in "${defaultPlatforms[@]}"; do
             skip=0
@@ -119,6 +124,7 @@ jobs:
             echo "image-name=$registry/$name:$tag"
             echo "platforms=$(IFS=',';  echo "${buildPlatforms[*]}")"
             echo "trivy-results=$trivyResults"
+            echo "include-windows=$includeWindows"
           } | tee -- "$GITHUB_OUTPUT"
 
       - name: Checkout
@@ -141,14 +147,6 @@ jobs:
         id: buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
-      - name: Login to Quay
-        if: startsWith(steps.image.outputs.image-name, 'quay.io/')
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        with:
-          username: ${{ secrets.QUAY_USER }}
-          password: ${{ secrets.QUAY_PASSWORD }}
-          registry: quay.io
-
       - name: Collect additional build contexts
         id: build-contexts
         env:
@@ -164,15 +162,81 @@ jobs:
               'rtrimstr("\n") | split("\n") | "list=\(tojson)"' \
             | tee -- "$GITHUB_OUTPUT"
 
-      - name: Build agent
+      - name: Build - Multi-platform
+        id: build
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: ${{ format('images/{0}', matrix.folder) }}
           build-contexts: ${{ join(fromJSON(steps.build-contexts.outputs.list), '\n') }}
           platforms: ${{ steps.image.outputs.platforms }}
-          tags: ${{ steps.image.outputs.image-name }}
-          outputs: type=image,push=true,rewrite-timestamp=true
+          outputs: type=oci,dest=image.tar,rewrite-timestamp=true
+
+      - name: Build - Windows 2019
+        if: steps.image.outputs.include-windows != ''
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: ${{ format('images/{0}', matrix.folder) }}
+          build-contexts: ${{ join(fromJSON(steps.build-contexts.outputs.list), '\n') }}
+          platforms: windows/amd64
+          build-args: WINDOWS_VERSION=2019
+          outputs: type=oci,dest=windows-2019.tar,rewrite-timestamp=true
+
+      - name: Build - Windows 2022
+        if: steps.image.outputs.include-windows != ''
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: ${{ format('images/{0}', matrix.folder) }}
+          build-contexts: ${{ join(fromJSON(steps.build-contexts.outputs.list), '\n') }}
+          platforms: windows/amd64
+          build-args: WINDOWS_VERSION=2022
+          outputs: type=oci,dest=windows-2022.tar,rewrite-timestamp=true
+
+      - name: Build - Windows 2025
+        if: steps.image.outputs.include-windows != ''
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: ${{ format('images/{0}', matrix.folder) }}
+          build-contexts: ${{ join(fromJSON(steps.build-contexts.outputs.list), '\n') }}
+          platforms: windows/amd64
+          build-args: WINDOWS_VERSION=2025
+          outputs: type=oci,dest=windows-2025.tar,rewrite-timestamp=true
+
+      - name: Combine images
+        id: combine
+        if: steps.image.outputs.include-windows != ''
+        run: |
+          digest=$(./index-append.sh combined image.tar windows-20{19,22,25}.tar)
+          tar cf combined.tar -C combined \
+            --sort=name \
+            --mtime=@0 \
+            --owner=0 --group=0 --numeric-owner \
+            --pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime \
+            blobs/ index.json oci-layout
+          mv combined.tar image.tar
+          rm windows-20{19,22,25}.tar
+          rm -rf combined
+          echo "digest=$digest" | tee -- "$GITHUB_OUTPUT"
+
+      - name: Install ORAS
+        uses: oras-project/setup-oras@38de303aac69abb66f3e6255b7198bff35f323e3 # v2.0.0
+
+      - name: Login to Quay
+        if: startsWith(steps.image.outputs.image-name, 'quay.io/')
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          username: ${{ secrets.QUAY_USER }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+          registry: quay.io
+
+      - name: Push image
+        env:
+          IMAGE_NAME: "${{ steps.image.outputs.image-name }}"
+          DIGEST: "${{ steps.combine.outputs.digest || steps.build.outputs.digest }}"
+        run: oras cp -r --from-oci-layout -- image.tar@"$DIGEST" "$IMAGE_NAME"
 
       - name: Run Trivy vulnerability
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
